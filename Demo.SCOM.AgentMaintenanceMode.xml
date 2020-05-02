@@ -1,0 +1,652 @@
+﻿<?xml version="1.0" encoding="utf-8"?><ManagementPack ContentReadable="true" SchemaVersion="2.0" OriginalSchemaVersion="1.1" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+  <Manifest>
+    <Identity>
+      <ID>Demo.SCOM.AgentMaintenanceMode</ID>
+      <Version>1.0.0.15</Version>
+    </Identity>
+    <Name>Demo.SCOM.AgentMaintenanceMode</Name>
+    <References>
+      <Reference Alias="SC">
+        <ID>Microsoft.SystemCenter.Library</ID>
+        <Version>7.0.8433.0</Version>
+        <PublicKeyToken>31bf3856ad364e35</PublicKeyToken>
+      </Reference>
+      <Reference Alias="Windows">
+        <ID>Microsoft.Windows.Library</ID>
+        <Version>7.5.8501.0</Version>
+        <PublicKeyToken>31bf3856ad364e35</PublicKeyToken>
+      </Reference>
+      <Reference Alias="Health">
+        <ID>System.Health.Library</ID>
+        <Version>7.0.8433.0</Version>
+        <PublicKeyToken>31bf3856ad364e35</PublicKeyToken>
+      </Reference>
+      <Reference Alias="System">
+        <ID>System.Library</ID>
+        <Version>7.5.8501.0</Version>
+        <PublicKeyToken>31bf3856ad364e35</PublicKeyToken>
+      </Reference>
+    </References>
+  </Manifest>
+  <Monitoring>
+    <Rules>
+      <Rule ID="Demo.SCOM.AgentMaintenanceMode.AgentTrigger.Rule" Enabled="true" Target="SC!Microsoft.SystemCenter.Agent" ConfirmDelivery="false" Remotable="true" Priority="Normal" DiscardLevel="100">
+        <Category>Maintenance</Category>
+        <DataSources>
+          <DataSource ID="DS" TypeID="Windows!Microsoft.Windows.EventProvider">
+            <ComputerName>$Target/Host/Property[Type="Windows!Microsoft.Windows.Computer"]/NetworkName$</ComputerName>
+            <LogName>Operations Manager</LogName>
+            <Expression>
+              <And>
+                <Expression>
+                  <SimpleExpression>
+                    <ValueExpression>
+                      <XPathQuery Type="UnsignedInteger">EventDisplayNumber</XPathQuery>
+                    </ValueExpression>
+                    <Operator>Equal</Operator>
+                    <ValueExpression>
+                      <Value Type="UnsignedInteger">9999</Value>
+                    </ValueExpression>
+                  </SimpleExpression>
+                </Expression>
+                <Expression>
+                  <SimpleExpression>
+                    <ValueExpression>
+                      <XPathQuery Type="String">PublisherName</XPathQuery>
+                    </ValueExpression>
+                    <Operator>Equal</Operator>
+                    <ValueExpression>
+                      <Value Type="String">AgentMaintenanceMode</Value>
+                    </ValueExpression>
+                  </SimpleExpression>
+                </Expression>
+              </And>
+            </Expression>
+          </DataSource>
+        </DataSources>
+        <WriteActions>
+          <WriteAction ID="PSWA" TypeID="Windows!Microsoft.Windows.PowerShellWriteAction" Target="SC!Microsoft.SystemCenter.CollectionManagementServer">
+            <ScriptName>Demo.SCOM.AgentMaintenanceMode.AgentTrigger.Rule.ps1</ScriptName>
+            <ScriptBody>
+#=================================================================================
+#  Agent Maintenance Mode Script run on MS
+#
+#  This script runs on the Management Server but is from a rule targeting agents
+#  It accepts parameters from an Event to trigger Maintenance Mode for a Computer
+#
+#  Author: Kevin Holman
+#
+#  Version 1.1
+#=================================================================================
+param([int]$Duration,[string]$Reason,[string]$Comment,[string]$UserId,[datetime]$LocalTimeStamp,[string]$AgentName)
+
+
+# Manual Testing section - put stuff here for manually testing script - typically parameters:
+#=================================================================================
+# [int]$Duration = "33"
+# [string]$Reason = "PlannedOther"
+# [string]$Comment = "This is a comment"
+# [string]$UserId = "DOMAIN\UserName"
+# [datetime]$LocalTimeStamp = get-date
+# [string]$AgentName = "server.opsmgr.net"
+#=================================================================================
+
+
+# Constants section - modify stuff here:
+#=================================================================================
+# Assign script name variable for use in event logging.  
+# ScriptName should be the same as the ID of the module that the script is contained in
+$ScriptName = "Demo.SCOM.AgentMaintenanceMode.AgentTrigger.Rule.ps1"
+$EventID = "7777"
+#=================================================================================
+
+
+# Starting Script section - All scripts get this
+#=================================================================================
+# Gather the start time of the script
+$StartTime = Get-Date
+#Set variable to be used in logging events
+$whoami = whoami
+# Load MOMScript API
+$momapi = New-Object -comObject MOM.ScriptAPI
+#Log script event that we are starting task
+$momapi.LogScriptEvent($ScriptName,$EventId,0,"`nScript is starting. `nThis event is created by a script running on the MS. `nAgentName: ($AgentName) `nDuration: ($Duration) `nReason: ($Reason) `nComment: ($Comment) `nUserId: ($UserId) `nLocal Time Stamp: ($LocalTimeStamp)")
+#=================================================================================
+
+
+# Connect to local SCOM Management Group Section
+#=================================================================================
+# I have found this to be the most reliable method to load SCOM modules for scripts running on Management Servers
+# Clear any previous errors
+$Error.Clear()
+# Import the OperationsManager module and connect to the management group
+$SCOMPowerShellKey = "HKLM:\SOFTWARE\Microsoft\System Center Operations Manager\12\Setup\Powershell\V2"
+$SCOMModulePath = Join-Path (Get-ItemProperty $SCOMPowerShellKey).InstallDirectory "OperationsManager"
+Import-module $SCOMModulePath
+New-DefaultManagementGroupConnection "localhost"
+IF ($Error) 
+{ 
+  $momapi.LogScriptEvent($ScriptName,$EventID,1,"`n FATAL ERROR: Unable to load OperationsManager module or unable to connect to Management Server. `n Terminating script. `n Error is: ($Error).")
+  EXIT
+}
+#=================================================================================
+
+
+# Begin MAIN script section
+#=================================================================================
+# We need to get the Windows Computer object for the AgentName
+# We will use the method below because it is MUCH more efficient than
+# Get-SCOMClass -Name "Microsoft.Windows.Computer" | Get-SCOMClassInstance | Where {$_.Name -eq $AgentName}
+
+# Log Event for debugging
+$momapi.LogScriptEvent($ScriptName,$EventID,0,"`n Starting Windows Computer Object lookup for ($AgentName).")
+
+$MG = Get-SCOMManagementGroup
+$WC = Get-SCOMClass -Name "Microsoft.Windows.Computer"
+$strCriteria = "DisplayName = '$AgentName'"
+$objMonitoringObjectCriteria = New-Object Microsoft.EnterpriseManagement.Monitoring.MonitoringObjectCriteria($strCriteria,$WC)
+$AgentWindowsComputer = $MG.GetMonitoringObjects($objMonitoringObjectCriteria)
+
+IF (!($AgentWindowsComputer))
+{
+  # We didnt find a windows computer object for some reason
+  $momapi.LogScriptEvent($ScriptName,$EventID,2,"`n FATAL ERROR: A Windows Computer Object was NOT FOUND for AgentName: ($AgentName). `n Terminating script.")
+}
+ELSE
+{
+  # We found a matching Windows Computer in SCOM so set Windows Computer into MM
+  $WCDisplayName = $AgentWindowsComputer.DisplayName
+
+  # Check duration if less than 10 minutes
+  # SCOM needs a minimum of 5 minutes or MM is disallowed.  Set minimum MM to 10 minutes to allow for latency
+  IF ($Duration -lt 10)
+  {
+    $Duration = 10
+  }
+  
+  #Calculate MM end time
+  $EndTime = ((Get-Date).AddMinutes($Duration))
+
+  # Log Event for debugging
+  $momapi.LogScriptEvent($ScriptName,$EventID,0,"`n FOUND Windows Computer Object with DisplayName: ($WCDisplayName). `n Starting MM with the following parameters: `n EndTime: ($EndTime) `n Comment: ($Comment) `n Reason: ($Reason)")
+
+  # Clear any previous errors
+  $Error.Clear()
+  # Call maintenance mode:
+  Start-SCOMMaintenanceMode -Instance $AgentWindowsComputer -EndTime $EndTime -Comment $Comment -Reason $Reason
+  # Check for any errors
+  IF ($Error) 
+  { 
+    $momapi.LogScriptEvent($ScriptName,$EventID,2,"`n Error setting Maintenance Mode for computer: ($WCDisplayName) with AgentName: ($AgentName). `n Error is: ($Error).")
+  }
+  ELSE
+  {
+    # Log event for no errors
+    $momapi.LogScriptEvent($ScriptName,$EventID,0,"`n Maintenance mode was set for computer: ($WCDisplayName).")
+
+    #Consider adding a check here to see if it is really in MM.  This might add additional SDK time to the script however.
+  }
+}
+#=================================================================================
+# End MAIN script section
+
+
+# End of script section
+#=================================================================================
+#Log an event for script ending and total execution time.
+$EndTime = Get-Date
+$ScriptTime = ($EndTime - $StartTime).TotalSeconds
+$momapi.LogScriptEvent($ScriptName,$EventID,0,"`n Script Completed for ($AgentName). `n Script Runtime: ($ScriptTime) seconds.")
+#=================================================================================
+# End of script
+			</ScriptBody>
+            <Parameters>
+              <Parameter>
+                <Name>Duration</Name>
+                <Value>$Data/Params/Param[2]$</Value>
+              </Parameter>
+              <Parameter>
+                <Name>Reason</Name>
+                <Value>$Data/Params/Param[3]$</Value>
+              </Parameter>
+              <Parameter>
+                <Name>Comment</Name>
+                <Value>$Data/Params/Param[4]$</Value>
+              </Parameter>
+              <Parameter>
+                <Name>UserId</Name>
+                <Value>$Data/Params/Param[5]$</Value>
+              </Parameter>
+              <Parameter>
+                <Name>LocalTimeStamp</Name>
+                <Value>$Data/Params/Param[6]$</Value>
+              </Parameter>
+              <Parameter>
+                <Name>AgentName</Name>
+                <Value>$Data/Params/Param[7]$</Value>
+              </Parameter>							
+            </Parameters>
+            <TimeoutSeconds>120</TimeoutSeconds>
+          </WriteAction>
+        </WriteActions>
+      </Rule>
+      <Rule ID="Demo.SCOM.AgentMaintenanceMode.SCCMServiceWindows.Rule" Enabled="false" Target="SC!Microsoft.SystemCenter.Agent" ConfirmDelivery="true" Remotable="true" Priority="Normal" DiscardLevel="100">
+        <Category>Custom</Category>
+        <DataSources>
+          <DataSource ID="Scheduler" TypeID="System!System.Scheduler">
+            <Scheduler>
+              <SimpleReccuringSchedule>
+                <Interval Unit="Seconds">600</Interval>
+				<SpreadInitializationOverInterval Unit="Seconds">600</SpreadInitializationOverInterval>				
+              </SimpleReccuringSchedule>
+              <ExcludeDates />
+            </Scheduler>
+          </DataSource>		  
+        </DataSources>
+        <WriteActions>
+          <WriteAction ID="WA" TypeID="Windows!Microsoft.Windows.PowerShellWriteAction">
+            <ScriptName>Demo.SCOM.AgentMaintenanceMode.SCCMServiceWindows.Rule.ps1</ScriptName>
+            <ScriptBody>
+#=================================================================================
+#  Agent Initiated MM from SCCM Service Window
+#
+#  Author: Jason Daggett, Kevin Holman
+#  Version 1.5
+#=================================================================================
+param([String]$ComputerName,[string]$MGName,[int]$MinDurationMinutes,[int]$MaxDurationMinutes,[int]$TriggerAdvanceMinutes)
+
+
+# Manual Testing section - put stuff here for manually testing script - typically parameters:
+#=================================================================================
+# $ComputerName = "computername.domain.com"
+# $MGName = "SCOM"
+# [int]$MinDurationMinutes = "10"
+# [int]$MaxDurationMinutes = "1440"
+# [int]$TriggerAdvanceMinutes = "15"
+#=================================================================================
+
+
+# Constants section - modify stuff here:
+#=================================================================================
+# Assign script name variable for use in event logging.
+# ScriptName should be the same as the ID of the module that the script is contained in
+$ScriptName = "Demo.SCOM.AgentMaintenanceMode.SCCMServiceWindows.Rule.ps1"
+$EventID = "8888"
+#=================================================================================
+
+
+# Starting Script section - All scripts get this
+#=================================================================================
+# Gather the start time of the script
+$ScriptStartTime = Get-Date
+#Set variable to be used in logging events
+$whoami = whoami
+# Load MOMScript API
+$momapi = New-Object -comObject MOM.ScriptAPI
+#=================================================================================
+
+
+# Functions Section
+#=================================================================================
+# Function to create events with parameters
+FUNCTION CreateParamEvent ($EvtId,$param1,$param2,$param3,$param4,$param5,$param6,$param7)
+{
+  $Id = New-Object System.Diagnostics.EventInstance($EvtId,1,2)
+  $EvtObject = New-Object System.Diagnostics.EventLog;
+  $EvtObject.Log = $EvtLog
+  $EvtObject.Source = $EvtSource
+  $EvtObject.WriteEvent($Id, @($param1,$param2,$param3,$param4,$param5,$param6,$param7))
+}
+#=================================================================================
+
+
+# Begin MAIN script section
+#=================================================================================
+$Error.Clear()
+#Get SCCM Client version to ensure this machine has SCCM client installed and WMI is working
+$GetSCCMClientVersion = Get-WmiObject -NameSpace root\CCM -Class Sms_Client | Select-Object ClientVersion
+$SCCMClientVersion = $GetSCCMClientVersion.ClientVersion
+[int]$SCCMClientMajorVersion = $SCCMClientVersion.Split(".")[0]
+IF ($Error)
+{
+  $momapi.LogScriptEvent($ScriptName,$EventID,2,"`nFATAL ERROR: Unable to query to SCCM Client WMI Namespace for the Root\CCM Sms_Client class. `nTerminating script. `nError is: ($Error).")
+  EXIT
+}
+# Stop if SCCM client isn't version 5 or later.
+IF ($SCCMClientMajorVersion -lt '5')
+{
+  $momapi.LogScriptEvent($ScriptName,$EventID,2,"`nFATAL ERROR: SCCM client version is less than 5.x `nThis client version does not support SCCM Service Windows.")
+  EXIT
+}
+
+# Get the SCCM Service Windows from the client WMI
+# By default we will examine all maintenance windows with Type LESS than 6
+# Type 1:  ALLPROGRAM_SERVICEWINDOW  (All Deployment Service Window)
+# Type 2:  PROGRAM_SERVICEWINDOW  (Program Service Window)
+# Type 3:  REBOOTREQUIRED_SERVICEWINDOW  (Reboot Required Service Window)
+# Type 4:  SOFTWAREUPDATE_SERVICEWINDOW  (Software Update Service Window)
+# Type 5:  OSD_SERVICEWINDOW  (Task Sequences Service Window)
+# Type 6:  USER_DEFINED_SERVICE_WINDOW  (Corresponds to non-working hours)
+
+$ServiceWindows = Get-WmiObject -namespace root\CCM\ClientSDK -class CCM_ServiceWindow | Where-Object {$_.Type -lt '6'} | Select-Object ID, StartTime, EndTime, Duration, Type
+IF ($Error)
+{
+  $momapi.LogScriptEvent($ScriptName,$EventID,2,"`nFATAL ERROR: Unable to query WMI for CCM_ServiceWindow. `nTerminating script. `nError is: ($Error).")
+  EXIT
+}
+ELSEIF (!($ServiceWindows))
+{
+  $momapi.LogScriptEvent($ScriptName,$EventID,0,"`nThere are no Service Windows defined for this SCCM client. `nQuery to WMI for CCM_ServiceWindow returned nothing. `nTerminating script.")
+  EXIT
+}
+
+### Assume we found a SCCM Service Window from SCCM Client to continue
+
+#Modify the Start and End times of the service windows
+#This select pulls all properties already attached (using *) then attaches two more calculated properties.
+#The full syntax is @{Name="PropName";Expression={Scriptblock that modifies an existing property} }
+$ServiceWindows = $ServiceWindows | Select *,
+@{N="Start";E={ [System.Management.ManagementDateTimeConverter]::ToDateTime($_.StartTime).ToUniversalTime()} },
+@{N="End";E={ [System.Management.ManagementDateTimeConverter]::ToDateTime($_.EndTime).ToUniversalTime()} }
+
+[int]$ServiceWindowsCount = $ServiceWindows.Count
+[string]$ServiceWindowsString = $ServiceWindows | Sort start | Out-String
+
+#Log script event that we are starting task and output parameters and service window data
+$momapi.LogScriptEvent($ScriptName,$EventID,0,"`nScript is starting. `nRunning as ($whoami). `nManagement Group: ($MGName). `nMinimum Duration in minutes: ($MinDurationMinutes). `nMaximum Duration in minutes: ($MaxDurationMinutes). `nTrigger SCOM Maintenance Mode event if future SCCM Maintenance Window will start within: ($TriggerAdvanceMinutes) minutes. `nThere are ($ServiceWindowsCount) SCCM Service Windows on this client. `nAll SCCM Windows:`n($ServiceWindowsString)")
+
+#Get the next possible active service window or the current one if endtime hasn't passed yet.
+$ServiceWindow = $ServiceWindows | Sort start | Select -First 1
+
+#If the current or next upcoming service window has overlap, get the service windows that overlap it.
+$SW_Overlap = $ServiceWindows | ? { ( $_.Start -ge $ServiceWindow.Start ) -and ( $_.Start -le $ServiceWindow.End ) -and ( $_.ID -ne $ServiceWindow.ID ) }
+IF ($SW_Overlap)
+{
+  #This is a tricky addition, it takes each element from both arrays are creates a larger arrray with all elements.
+  #This was done just in case there is more than one overlapping service window.
+  $StartTime = @($ServiceWindow.Start) + @($sw_overlap.start) | sort | Select -first 1
+  $EndTime = @($ServiceWindow.End) + @($SW_Overlap.End) | sort | Select -Last 1
+}
+ELSE
+{
+  $StartTime = $ServiceWindow.Start
+  $EndTime = $ServiceWindow.End
+}
+
+#Get the duration planned for the next upcoming or current SCCM maintenance window
+[int]$DurationMinutes = [double](New-TimeSpan -Start $StartTime -End $EndTime | Select -ExpandProperty TotalMinutes) + .5 #round up to the next whole minute
+
+#Get current time to do some calculations
+$CurrentTime = (Get-Date)
+
+#Determine if we should trigger maintenance mode NOW based on being inside a Maintenance Window or one coming up within TriggerAdvanceMinutes setting.
+$CurrentTimePlusAdvance = $CurrentTime.AddMinutes($TriggerAdvanceMinutes)
+$TriggerMaintNow = [bool](($CurrentTimePlusAdvance -ge $StartTime) -and ($CurrentTime -le $EndTime))
+
+#If we are in a maintenance window trigger SCOM Maintenance Mode event
+IF ($TriggerMaintNow -eq $true)
+{
+  # Stop if the duration has a value outside of the min and max parameters
+  IF ($DurationMinutes -lt $MinDurationMinutes -or $DurationMinutes -gt $MaxDurationMinutes)
+  {
+    $momapi.LogScriptEvent($ScriptName,$EventID,0,"`nDuration was too high or low. `nIGNORING this SCCM maintenance window. `nDuration: ($DurationMinutes). `nMinimum duration: ($MinDurationMinutes). `nMaximum Duration: ($MaxDurationMinutes). `nService Window Planned Start Time: ($StartTime). `nService Window Planned End Time: ($EndTime). `nTerminating script.")
+    EXIT
+  }
+
+  #Get adjusted SCOM maintenance window duration
+  #If we are in a maintenance window now calculate duration based on time left between NOW and end of maintenance window.
+  [int]$MMDuration = [double](New-TimeSpan -Start $CurrentTime -End $EndTime | Select -ExpandProperty TotalMinutes) + .5 #round up to the next whole minute
+  
+  #Define variables for SCOM Maintenance Mode
+  $MMStartTime = $StartTime
+  $MMEndTime = $EndTime
+  $Reason = "PlannedOther"
+  $Comment = "The SCCM Service Window maintenance started on ($ComputerName) at ($MMStartTime) and will end at ($MMEndTime) for at total of ($MMDuration) minutes."
+
+  #Define the event log and event source
+  $EvtLog = "Operations Manager"
+  $EvtSource = "AgentMaintenanceMode"
+
+  #Load the event source to the log if not already loaded.  This will fail if the event source is already assigned to a different log.
+  IF ([System.Diagnostics.EventLog]::SourceExists($EvtSource) -eq $false)
+  {
+    [System.Diagnostics.EventLog]::CreateEventSource($EvtSource, $EvtLog)
+  }
+
+  # Create param based event to trigger MM
+  CreateParamEvent 9999 "Agent Side Maintenance Mode Initiated by SCCM Service Window. `nDuration in minutes: ($MMDuration). `nReason: ($Reason). `nComment: ($Comment). `nUser: ($WhoAmI). `nLocal Time Stamp: ($CurrentTime)" "$MMDuration" "$Reason" "$Comment" "$WhoAmI" "$CurrentTime" "$ComputerName"	
+
+  # Log event for script ending	
+  $ScriptEndTime = Get-Date
+  $ScriptTime = ($ScriptEndTime - $ScriptStartTime).TotalSeconds
+  $momapi.LogScriptEvent($ScriptName,$EventID,0, "`n$Comment `nScript Completed in ($ScriptTime) seconds.")
+}
+ELSE
+{
+  $ScriptEndTime = Get-Date
+  $ScriptTime = ($ScriptEndTime - $ScriptStartTime).TotalSeconds
+  $momapi.LogScriptEvent($ScriptName,$EventID,0,"`nThere are no currently active SCCM service windows. `nThe next SCCM service window will start at: `nStart Time: ($StartTime) `nEnd Time: ($EndTime) `nDuration: ($DurationMinutes) minutes. `nScript Completed in ($ScriptTime) seconds.")
+}
+#=================================================================================
+# End of script
+            </ScriptBody>
+            <Parameters>
+              <Parameter>
+                <Name>ComputerName</Name>
+                <Value>$Target/Host/Property[Type="Windows!Microsoft.Windows.Computer"]/PrincipalName$</Value>
+              </Parameter>
+              <Parameter>
+                <Name>MGName</Name>
+                <Value>$Target/ManagementGroup/Name$</Value>
+              </Parameter>
+              <Parameter>
+                <Name>MinDurationMinutes</Name>
+                <Value>10</Value>
+              </Parameter>
+              <Parameter>
+                <Name>MaxDurationMinutes</Name>
+                <Value>1440</Value>
+              </Parameter>
+              <Parameter>
+                <Name>TriggerAdvanceMinutes</Name>
+                <Value>15</Value>
+              </Parameter>			  
+            </Parameters>						
+            <TimeoutSeconds>120</TimeoutSeconds>
+          </WriteAction>
+        </WriteActions>
+      </Rule>
+      <Rule ID="Demo.SCOM.AgentMaintenanceMode.SCCMServiceWindowsScriptAlert.Rule" Enabled="true" Target="SC!Microsoft.SystemCenter.Agent" ConfirmDelivery="true" Remotable="true" Priority="Normal" DiscardLevel="100">
+        <Category>Alert</Category>
+        <DataSources>
+          <DataSource ID="DS" TypeID="Windows!Microsoft.Windows.EventProvider">
+            <ComputerName>$Target/Host/Property[Type="Windows!Microsoft.Windows.Computer"]/NetworkName$</ComputerName>
+            <LogName>Operations Manager</LogName>
+            <Expression>
+              <And>
+                <Expression>
+                  <SimpleExpression>
+                    <ValueExpression>
+                      <XPathQuery Type="UnsignedInteger">EventDisplayNumber</XPathQuery>
+                    </ValueExpression>
+                    <Operator>Equal</Operator>
+                    <ValueExpression>
+                      <Value Type="UnsignedInteger">8888</Value>
+                    </ValueExpression>
+                  </SimpleExpression>
+                </Expression>
+                <Expression>
+                  <SimpleExpression>
+                    <ValueExpression>
+                      <XPathQuery Type="String">PublisherName</XPathQuery>
+                    </ValueExpression>
+                    <Operator>Equal</Operator>
+                    <ValueExpression>
+                      <Value Type="String">Health Service Script</Value>
+                    </ValueExpression>
+                  </SimpleExpression>
+                </Expression>
+                <Expression>
+                  <RegExExpression>
+                    <ValueExpression>
+                      <XPathQuery Type="String">Params/Param[1]</XPathQuery>
+                    </ValueExpression>
+                    <Operator>MatchesWildcard</Operator>
+                    <Pattern>Demo.SCOM.AgentMaintenanceMode</Pattern>
+                  </RegExExpression>
+                </Expression>
+                <Expression>
+                  <RegExExpression>
+                    <ValueExpression>
+                      <XPathQuery Type="Integer">EventLevel</XPathQuery>
+                    </ValueExpression>
+                    <Operator>MatchesRegularExpression</Operator>
+                    <Pattern>^(1|2)$</Pattern>
+                  </RegExExpression>
+                </Expression>
+              </And>
+            </Expression>
+          </DataSource>
+        </DataSources>
+        <WriteActions>
+          <WriteAction ID="Alert" TypeID="Health!System.Health.GenerateAlert">
+            <Priority>1</Priority>
+            <Severity>1</Severity>
+            <AlertName />
+            <AlertDescription />
+            <AlertOwner />
+            <AlertMessageId>$MPElement[Name="Demo.SCOM.AgentMaintenanceMode.SCCMServiceWindowsScriptAlert.Rule.AlertMessage"]$</AlertMessageId>
+            <AlertParameters>
+              <AlertParameter1>$Data[Default='']/EventDescription$</AlertParameter1>
+            </AlertParameters>
+            <Suppression />
+            <Custom1 />
+            <Custom2 />
+            <Custom3 />
+            <Custom4 />
+            <Custom5 />
+            <Custom6 />
+            <Custom7 />
+            <Custom8 />
+            <Custom9 />
+            <Custom10 />
+          </WriteAction>
+        </WriteActions>
+      </Rule>			
+      <Rule ID="Demo.SCOM.AgentMaintenanceMode.AgentTriggerScriptErrorOnMS.Rule" Enabled="true" Target="SC!Microsoft.SystemCenter.CollectionManagementServer" ConfirmDelivery="true" Remotable="true" Priority="Normal" DiscardLevel="100">
+        <Category>Alert</Category>
+        <DataSources>
+          <DataSource ID="DS" TypeID="Windows!Microsoft.Windows.EventProvider">
+            <ComputerName>$Target/Host/Property[Type="Windows!Microsoft.Windows.Computer"]/NetworkName$</ComputerName>
+            <LogName>Operations Manager</LogName>
+            <Expression>
+              <And>
+                <Expression>
+                  <SimpleExpression>
+                    <ValueExpression>
+                      <XPathQuery Type="UnsignedInteger">EventDisplayNumber</XPathQuery>
+                    </ValueExpression>
+                    <Operator>Equal</Operator>
+                    <ValueExpression>
+                      <Value Type="UnsignedInteger">7777</Value>
+                    </ValueExpression>
+                  </SimpleExpression>
+                </Expression>
+                <Expression>
+                  <SimpleExpression>
+                    <ValueExpression>
+                      <XPathQuery Type="String">PublisherName</XPathQuery>
+                    </ValueExpression>
+                    <Operator>Equal</Operator>
+                    <ValueExpression>
+                      <Value Type="String">Health Service Script</Value>
+                    </ValueExpression>
+                  </SimpleExpression>
+                </Expression>
+                <Expression>
+                  <RegExExpression>
+                    <ValueExpression>
+                      <XPathQuery Type="String">Params/Param[1]</XPathQuery>
+                      <!-- Common options for XPathQuery Type are "Boolean" "String" "Integer" "Double" -->
+                    </ValueExpression>
+                    <Operator>MatchesWildcard</Operator>
+                    <!-- Common options for Operator are "MatchesWildcard" "DoesNotMatchWildcard" "ContainsSubstring" "DoesNotContainSubstring" "MatchesRegularExpression" "DoesNotMatchRegularExpression" -->
+                    <Pattern>Demo.SCOM.AgentMaintenanceMode</Pattern>
+                  </RegExExpression>
+                </Expression>
+                <Expression>
+                  <RegExExpression>
+                    <ValueExpression>
+                      <XPathQuery Type="Integer">EventLevel</XPathQuery>
+                    </ValueExpression>
+                    <Operator>MatchesRegularExpression</Operator>
+                    <Pattern>^(1|2)$</Pattern>
+                  </RegExExpression>
+                </Expression>
+              </And>
+            </Expression>
+          </DataSource>
+        </DataSources>
+        <WriteActions>
+          <WriteAction ID="Alert" TypeID="Health!System.Health.GenerateAlert">
+            <Priority>1</Priority>
+            <Severity>1</Severity>
+            <AlertName />
+            <AlertDescription />
+            <AlertOwner />
+            <AlertMessageId>$MPElement[Name="Demo.SCOM.AgentMaintenanceMode.AgentTriggerScriptErrorOnMS.Rule.AlertMessage"]$</AlertMessageId>
+            <AlertParameters>
+              <AlertParameter1>$Data[Default='']/EventDescription$</AlertParameter1>
+            </AlertParameters>
+            <Suppression />
+            <Custom1 />
+            <Custom2 />
+            <Custom3 />
+            <Custom4 />
+            <Custom5 />
+            <Custom6 />
+            <Custom7 />
+            <Custom8 />
+            <Custom9 />
+            <Custom10 />
+          </WriteAction>
+        </WriteActions>
+      </Rule>
+    </Rules>
+  </Monitoring>
+  <Presentation>
+    <StringResources>
+      <StringResource ID="Demo.SCOM.AgentMaintenanceMode.AgentTriggerScriptErrorOnMS.Rule.AlertMessage" />
+      <StringResource ID="Demo.SCOM.AgentMaintenanceMode.SCCMServiceWindowsScriptAlert.Rule.AlertMessage" />			
+    </StringResources>
+  </Presentation>
+  <LanguagePacks>
+    <LanguagePack ID="ENU" IsDefault="true">
+      <DisplayStrings>
+        <DisplayString ElementID="Demo.SCOM.AgentMaintenanceMode">
+          <Name>Demo SCOM Agent Initiated Maintenance Mode</Name>
+        </DisplayString>			
+        <DisplayString ElementID="Demo.SCOM.AgentMaintenanceMode.AgentTrigger.Rule">
+          <Name>Demo SCOM Agent Initiated Maintenance Mode Trigger Rule</Name>
+        </DisplayString>
+        <DisplayString ElementID="Demo.SCOM.AgentMaintenanceMode.SCCMServiceWindows.Rule">
+          <Name>Demo SCOM Agent Initiated Maintenance Mode SCCM Service Windows Rule</Name>
+        </DisplayString>				
+        <DisplayString ElementID="Demo.SCOM.AgentMaintenanceMode.AgentTriggerScriptErrorOnMS.Rule">
+          <Name>Demo SCOM Agent Initiated Maintenance Mode Script Error Rule</Name>
+        </DisplayString>
+        <DisplayString ElementID="Demo.SCOM.AgentMaintenanceMode.AgentTriggerScriptErrorOnMS.Rule.AlertMessage">
+          <Name>Error running a Demo SCOM Agent Initiated Maintenance Mode Script on Management Server</Name>
+          <Description>Event Description: {0}</Description>
+        </DisplayString>
+        <DisplayString ElementID="Demo.SCOM.AgentMaintenanceMode.SCCMServiceWindowsScriptAlert.Rule">
+          <Name>Demo SCOM Agent Initiated Maintenance Mode SCCM Service Windows Script Error Rule</Name>
+        </DisplayString>
+        <DisplayString ElementID="Demo.SCOM.AgentMaintenanceMode.SCCMServiceWindowsScriptAlert.Rule.AlertMessage">
+          <Name>Error running a Demo SCOM Agent Initiated Maintenance Mode SCCM Service Windows Script on Agent</Name>
+          <Description>Event Description: {0}</Description>
+        </DisplayString>				
+      </DisplayStrings>
+    </LanguagePack>
+  </LanguagePacks>
+</ManagementPack>
