@@ -1,6 +1,8 @@
 # MaintenanceModeFromSCCMWindow
 SCOM - Agent Initiated Maintenance mode with SCCM Maintenance Windows
 
+https://kevinholman.com/2019/07/28/scom-agent-initiated-maintenance-mode-with-sccm-maintenance-windows/
+
 #### The Demo.SCOM.AgentMaintenanceMode MP has two working parts:
 1.	A Management Pack
 2.	An agent side PowerShell Script
