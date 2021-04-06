@@ -172,19 +172,31 @@ ELSE
 
   # Clear any previous errors
   $Error.Clear()
-  # Call maintenance mode:
-  Start-SCOMMaintenanceMode -Instance $AgentWindowsComputer -EndTime $EndTime -Comment $Comment -Reason $Reason
-  # Check for any errors
-  IF ($Error) 
-  { 
-    $momapi.LogScriptEvent($ScriptName,$EventID,2,"`n Error setting Maintenance Mode for computer: ($WCDisplayName) with AgentName: ($AgentName). `n Error is: ($Error).")
-  }
-  ELSE
-  {
-    # Log event for no errors
-    $momapi.LogScriptEvent($ScriptName,$EventID,0,"`n Maintenance mode was set for computer: ($WCDisplayName).")
+    $Error.Clear()
+  # #Edit MarcPosch: Check for existing Maintenance Windows
+  $MM=Get-SCOMMaintenanceMode -Instance $AgentWindowsComputer
 
-    #Consider adding a check here to see if it is really in MM.  This might add additional SDK time to the script however.
+  if ($MM.Count -ge 1) {
+    $momapi.LogScriptEvent($ScriptName,$EventID,0,"`n EXISTING Maintenance Windows for Windows Computer Object found. `n SKIPPING Maintenance Window Creation.")
+
+    # Clear any previous errors
+    $Error.Clear()
+  }
+  else {
+    # Call maintenance mode:
+    Start-SCOMMaintenanceMode -Instance $AgentWindowsComputer -EndTime $EndTime -Comment $Comment -Reason $Reason
+    # Check for any errors
+    IF ($Error) 
+    { 
+      $momapi.LogScriptEvent($ScriptName,$EventID,2,"`n Error setting Maintenance Mode for computer: ($WCDisplayName) with AgentName: ($AgentName). `n Error is: ($Error).")
+    }
+    ELSE
+    {
+      # Log event for no errors
+      $momapi.LogScriptEvent($ScriptName,$EventID,0,"`n Maintenance mode was set for computer: ($WCDisplayName).")
+
+      #Consider adding a check here to see if it is really in MM.  This might add additional SDK time to the script however.
+    }
   }
 }
 #=================================================================================
